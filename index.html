@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>QuickInfo — Dashboard</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <div class="logo">QI</div>
+      <div class="title">QuickInfo — Dashboard</div>
+    </div>
+    <nav>
+      <a href="/landing.html">Landing</a>
+    </nav>
+  </header>
+
+  <main id="app" class="container">
+    <!-- JS will render dashboard or student view -->
+  </main>
+
+  <footer class="foot">QuickInfo v1 — Files served from Vercel Blob</footer>
+
+<script>
+(async function(){
+  const API_FILES = '/api/files';     // get metadata
+  const API_UPLOAD = '/api/upload';   // upload files
+
+  // small helpers
+  function el(tag, attrs={}, children=''){
+    const e=document.createElement(tag);
+    for(const k in attrs) if(k!=='class') e.setAttribute(k, attrs[k]);
+    if(attrs.class) e.className = attrs.class;
+    if(typeof children === 'string') e.innerHTML = children;
+    else if(Array.isArray(children)) children.forEach(c=>e.appendChild(c));
+    return e;
+  }
+  function q(s){ return document.querySelector(s); }
+
+  // Routing: if hash is #course-<id> show student view; otherwise dashboard
+  function start(){ handleRoute(); window.addEventListener('hashchange', handleRoute); }
+  async function handleRoute(){
+    const h = location.hash || '';
+    if(h.startsWith('#course-')) {
+      const id = decodeURIComponent(h.replace('#course-',''));
+      await renderStudentCourse(id);
+    } else {
+      await renderDashboard();
+    }
+  }
+
+  // fetch metadata list
+  async function fetchFiles(){
+    const res = await fetch(API_FILES);
+    if(!res.ok) return [];
+    return await res.json();
+  }
+
+  // Dashboard (teacher)
+  async function renderDashboard(){
+    const root = q('#app'); root.innerHTML = '';
+    const files = await fetchFiles();
+
+    const left = el('section', {class:'panel'}, [
+      el('h2', {}, 'Upload document'),
+      el('input', {id:'course-id', placeholder:'Course ID (e.g. CS101)', class:'input'}),
+      el('div', {class:'row'}, [
+        el('input', {id:'file-input', type:'file', multiple:true}),
+        el('button', {id:'upload-btn', class:'btn'}, 'Upload')
+      ]),
+      el('div', {id:'upload-msg', class:'muted'}, '')
+    ]);
+
+    const right = el('section', {class:'panel'}, [
+      el('h2', {}, 'Courses & Files'),
+      el('div', {id:'courses-list'})
+    ]);
+
+    root.appendChild(left);
+    root.appendChild(right);
+
+    // populate courses
+    renderCourseList(files);
+
+    // file upload handler
+    q('#upload-btn').onclick = async ()=>{
+      const courseId = q('#course-id').value.trim();
+      const input = q('#file-input');
+      if(!courseId) return alert('Enter Course ID');
+      if(!input.files.length) return alert('Choose files');
+      q('#upload-msg').textContent = 'Uploading...';
+
+      const fd = new FormData();
+      fd.append('courseId', courseId);
+      for(const f of input.files) fd.append('files', f);
+
+      const resp = await fetch(API_UPLOAD, { method:'POST', body: fd });
+      const j = await resp.json();
+      if(!resp.ok) {
+        q('#upload-msg').textContent = 'Upload failed: ' + (j?.error||resp.statusText);
+        return;
+      }
+      q('#upload-msg').textContent = 'Uploaded successfully.';
+      input.value = '';
+      // refresh
+      const newFiles = await fetchFiles();
+      renderCourseList(newFiles);
+    };
+  }
+
+  function renderCourseList(files){
+    const list = q('#courses-list'); list.innerHTML = '';
+    const grouped = {};
+    files.forEach(f => {
+      if(!grouped[f.courseId]) grouped[f.courseId] = [];
+      grouped[f.courseId].push(f);
+    });
+    const ids = Object.keys(grouped).sort();
+    if(!ids.length){
+      list.innerHTML = '<div class="muted">No courses uploaded yet.</div>'; return;
+    }
+    ids.forEach(cid=>{
+      const box = el('div', {class:'course-box'}, [
+        el('div', {class:'course-head'}, [
+          el('h3', {}, cid),
+          el('div', {class:'course-actions'}, [
+            el('button', {class:'btn ghost', onclick:`(function(){})()`}, 'QR') // replaced below with proper handler
+          ])
+        ]),
+        el('div', {class:'course-files'})
+      ]);
+      // fill files
+      const filesHtml = box.querySelector('.course-files');
+      grouped[cid].forEach(f=>{
+        const row = el('div', {class:'file-row'}, [
+          el('div', {}, `<strong>${escapeHtml(f.name)}</strong> <div class="muted">${new Date(f.uploadedAt).toLocaleString()}</div>`),
+          el('div', {}, `<a class='btn secondary' href="${f.blobUrl}" target="_blank" rel="noopener">Open</a>`)
+        ]);
+        filesHtml.appendChild(row);
+      });
+
+      // replace QR handler (generate folder QR)
+      const qrBtn = box.querySelector('.btn.ghost');
+      qrBtn.textContent = 'Generate Folder QR';
+      qrBtn.onclick = ()=>openQRModalForCourse(cid);
+
+      list.appendChild(box);
+    });
+  }
+
+  // Modal simple QR
+  function openQRModalForCourse(courseId){
+    const modal = document.createElement('div'); modal.className='modal';
+    const link = location.origin + location.pathname + '#course-' + encodeURIComponent(courseId);
+    modal.innerHTML = `
+      <div class="modal-inner">
+        <h3>QR for ${escapeHtml(courseId)}</h3>
+        <div id="qbox" style="margin:12px"></div>
+        <p class="muted">${link}</p>
+        <div style="margin-top:8px"><a id="download-qr" class="btn ghost">Download QR</a> <a id="open-link" class="btn secondary" href="${link}">Open Link</a> <button id="close-modal" class="btn secondary">Close</button></div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    const qbox = modal.querySelector('#qbox');
+    new QRCode(qbox, { text: link, width: 200, height: 200 });
+    setTimeout(()=>{
+      const img = qbox.querySelector('img') || qbox.querySelector('canvas');
+      if(img) {
+        const data = img.tagName === 'IMG' ? img.src : img.toDataURL();
+        modal.querySelector('#download-qr').href = data;
+        modal.querySelector('#download-qr').download = `quickinfo-${courseId}-qr.png`;
+      } else modal.querySelector('#download-qr').style.display = 'none';
+    },120);
+    modal.querySelector('#close-modal').onclick = ()=> modal.remove();
+  }
+
+  // Student view for a course
+  async function renderStudentCourse(courseId){
+    const root = q('#app'); root.innerHTML = '';
+    const hdr = el('div', {class:'panel'}, [
+      el('h2', {}, `Course: ${escapeHtml(courseId)}`),
+      el('p', {class:'muted'}, 'Public course folder — list of files'),
+      el('p', {}, `<a href="/landing.html" class="btn secondary">Home</a>`)
+    ]);
+    root.appendChild(hdr);
+
+    const files = await fetchFiles();
+    const courseFiles = files.filter(f => f.courseId === courseId).sort((a,b)=>b.uploadedAt - a.uploadedAt);
+    if(!courseFiles.length) { root.appendChild(el('div', {class:'muted'}, 'No files found')); return; }
+
+    const list = el('div', {class:'panel'});
+    courseFiles.forEach(f=>{
+      const r = el('div', {class:'file-row'}, [
+        el('div', {}, `<strong>${escapeHtml(f.name)}</strong><div class='muted'>${new Date(f.uploadedAt).toLocaleString()}</div>`),
+        el('div', {}, `<a class='btn' href="${f.blobUrl}" target="_blank" rel="noopener" download>Download</a>`)
+      ]);
+      list.appendChild(r);
+    });
+    root.appendChild(list);
+  }
+
+  // small escaping
+  function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  // start
+  start();
+})();
+</script>
+</body>
+</html>
